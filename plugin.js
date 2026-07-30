@@ -1,73 +1,97 @@
 (function () {
     'use strict';
 
+    var observer = null;
+
     function initSeasonsPosters() {
-        // Слушаем событие полной готовности (отрисовки) карточки фильма
+        // Подписываемся на открытие и закрытие карточек
         Lampa.Listener.follow('full', function (e) {
-            // Активируем логику только при открытии карточки контента
-            if (e.type === 'start' && e.data && e.data.movie) {
-                // Небольшой тайм-аут, чтобы стандартные вкладки Lampa успели сформироваться в DOM
-                setTimeout(function () {
-                    try {
-                        buildPostersFromCache(e.data);
-                    } catch (err) {
-                        console.log('Seasons Posters Plugin Error: ', err);
-                    }
-                }, 350);
+            if (e.type === 'start') {
+                startDOMTracking();
+            } else if (e.type === 'close') {
+                stopDOMTracking();
             }
         });
     }
 
-    function buildPostersFromCache(data) {
-        // Проверяем, что это сериал, и у Lampa уже есть массив сезонов в памяти
-        if (!data.movie.number_of_seasons || !data.movie.seasons || !data.movie.seasons.length) return;
+    function startDOMTracking() {
+        stopDOMTracking(); // Сброс старого наблюдателя, если он остался
 
-        // Ищем активное окно (Activity) рендеринга карточки
+        // Отслеживаем изменения во всей DOM-структуре приложения Lampa
+        observer = new MutationObserver(function (mutations) {
+            // Ищем блок сезонов по всем возможным селекторам Lampa (разные версии/моды)
+            var target = $('.full-start__seasons, .full-descr__seasons, [data-id="seasons"], .full-start__season').first();
+            
+            // Если оригинальный блок сезонов появился в DOM и мы его еще не обрабатывали
+            if (target.length && !target.hasClass('processed-by-posters')) {
+                // Находим родительский контейнер
+                var container = target.parent();
+                if (container.length) {
+                    // Помечаем, чтобы не войти в бесконечный цикл
+                    target.addClass('processed-by-posters');
+                    tryTransformToPosters(container);
+                }
+            }
+        });
+
+        observer.observe(document.body, {
+            childList: true,
+            subtree: true
+        });
+    }
+
+    function stopDOMTracking() {
+        if (observer) {
+            observer.disconnect();
+            observer = null;
+        }
+    }
+
+    function tryTransformToPosters(container) {
         var activeActivity = Lampa.Activity.active();
-        if (!activeActivity || !activeActivity.render) return;
+        if (!activeActivity || !activeActivity.movie || !activeActivity.movie.seasons) return;
 
-        var render = activeActivity.render;
-        
-        // Находим контейнер сезонов по внутренним классам Lampa
-        var seasonsContainer = render.find('.full-start__seasons, .full-descr__seasons, [data-id="seasons"]');
-        if (!seasonsContainer.length) return;
+        var seasonsData = activeActivity.movie.seasons;
+        var nativeTabs = container.find('.full-start__season, .full-descr__season, .full-descr__link');
 
-        // Фиксируем оригинальные нативные вкладки для программной симуляции клика пульта
-        var nativeTabs = seasonsContainer.find('.full-start__season, .full-descr__season, .full-descr__link');
+        // Скрываем оригинальные кнопки (не удаляем через .empty(), чтобы не ломать логику навигации Lampa)
+        nativeTabs.css({
+            'display': 'none',
+            'width': '0px',
+            'height': '0px',
+            'padding': '0px',
+            'margin': '0px',
+            'overflow': 'hidden'
+        });
 
-        // Очищаем стандартную текстовую строчку сезонов
-        seasonsContainer.empty();
+        // Если сетка уже существует внутри этого контейнера, удаляем старую версию
+        container.find('.seasons-posters-grid').remove();
 
-        // Создаем горизонтальный контейнер-ленту для постеров
+        // Создаем новую горизонтальную сетку для постеров
         var gridHtml = $('<div class="seasons-posters-grid"></div>');
         gridHtml.css({
             'display': 'flex',
             'flex-direction': 'row',
             'overflow-x': 'auto',
-            'gap': '15px',
+            'gap': '16px',
             'padding': '15px 5px',
             'width': '100%',
             'scroll-behavior': 'smooth',
-            'box-sizing': 'border-box',
-            'margin-bottom': '10px'
+            'box-sizing': 'border-box'
         });
 
-        // Берем данные сезонов прямо из готового объекта Lampa
-        data.movie.seasons.forEach(function (season) {
-            // Пропускаем Спецвыпуски (0 сезон), если у них нет картинки
+        seasonsData.forEach(function (season) {
             if (season.season_number === 0 && !season.poster_path) return;
 
-            // Формируем прямую ссылку на картинку через штатный конвертер путей Lampa
+            // Конвертируем относительный путь картинки TMDB через внутреннюю утилиту Lampa
             var poster = season.poster_path 
                 ? Lampa.TMDB.image('t/p/w300' + season.poster_path) 
                 : 'img/plugins/no-poster.png';
 
-            // Имя сезона (если в кэше пусто, пишем стандартное "Сезон X")
             var seasonName = season.name || (season.season_number === 0 ? 'Спецвыпуски' : season.season_number + ' сезон');
-            // Количество серий
             var episodesCount = season.episode_count ? season.episode_count + ' сер.' : '';
 
-            // Верстка карточки постера с классом 'selector' для захвата фокуса пульта ДУ
+            // Класс 'selector' необходим, чтобы нативный фокус пульта Lampa Navigator мог выделять элемент
             var item = $(`
                 <div class="season-poster-item selector" data-season="${season.season_number}" style="width: 130px; flex-shrink: 0; cursor: pointer; text-align: center; outline: none;">
                     <div class="season-poster-img" style="background-image: url(${poster}); width: 100%; height: 195px; background-size: cover; background-position: center; border-radius: 6px; box-shadow: 0 4px 12px rgba(0,0,0,0.6); transition: transform 0.15s ease-in-out;"></div>
@@ -76,11 +100,11 @@
                 </div>
             `);
 
-            // Добавляем визуальный эффект увеличения карточки при наведении пульта
+            // Визуальный отклик на фокус пульта ДУ
             item.on('hover:focus', function () {
                 $(this).find('.season-poster-img').css({
                     'transform': 'scale(1.05)',
-                    'box-shadow': '0 0 12px #fff',
+                    'box-shadow': '0 0 14px rgba(255,255,255,0.8)',
                     'border': '2px solid #fff'
                 });
             }).on('hover:unfocus', function () {
@@ -91,18 +115,13 @@
                 });
             });
 
-            // Обработка нажатия кнопки ОК на пульте
+            // Эмуляция клика по оригинальным скрытым кнопкам при нажатии "ОК" на пульте
             item.on('hover:enter', function () {
-                // Проверяем наличие встроенных методов переключения сезонов в Lampa
                 if (activeActivity.selectSeason) {
                     activeActivity.selectSeason(season.season_number);
-                } else if (activeActivity.object && activeActivity.object.selectSeason) {
-                    activeActivity.object.selectSeason(season.season_number);
                 } else {
-                    // Если методы скрыты, эмулируем клик по оригинальной вкладке, которую мы сохранили
                     var targetTab = nativeTabs.filter('[data-number="' + season.season_number + '"], [data-id="' + season.season_number + '"]');
                     if (!targetTab.length) {
-                        // Поиск вкладки по тексту внутри (резервный вариант)
                         nativeTabs.each(function() {
                             if ($(this).text().indexOf(season.season_number) !== -1) targetTab = $(this);
                         });
@@ -114,15 +133,15 @@
             gridHtml.append(item);
         });
 
-        seasonsContainer.append(gridHtml);
+        container.append(gridHtml);
 
-        // Перезапускаем менеджер навигации Lampa, чтобы зарегистрировать новые постеры для пульта
+        // Принудительно регистрируем новые карточки в системе навигации пульта
         if (window.Lampa.Navigator) {
             Lampa.Navigator.update();
         }
     }
 
-    // Регистрация расширения в системе Lampa
+    // Регистрация расширения
     if (window.Lampa) {
         initSeasonsPosters();
     } else {
