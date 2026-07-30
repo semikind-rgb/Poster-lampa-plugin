@@ -2,93 +2,104 @@
     'use strict';
 
     function initSeasonsPosters() {
-        // Подписываемся на открытие полной карточки релиза
-        Lampa.Listener.follow('full', function (e) {
-            if (e.type === 'complite' && e.data.movie && e.data.movie.number_of_seasons) {
-                // Дожидаемся рендеринга DOM-структуры карточки
-                setTimeout(function () {
-                    modifySeasonsToPosters(e.data);
-                }, 300);
-            }
-        });
-    }
-
-    function modifySeasonsToPosters(data) {
-        // Ищем контейнер сезонов внутри активной разметки карточки Lampa
-        var activeRender = data.object.render();
-        if (!activeRender) return;
-
-        var seasonsContainer = activeRender.find('.full-start__seasons, .full-descr__seasons');
-        if (!seasonsContainer.length) return;
-
-        var tv_id = data.movie.id;
+        // Перехватываем создание компонента полного описания фильма ('full')
+        var originalFull = Lampa.Component.get('full');
         
-        // Используем встроенный сетевой класс Lampa (Reguest) для автоматического проксирования TMDB
-        var network = new Lampa.Reguest();
-        var tmdbUrl = 'tv/' + tv_id + '?language=ru-RU';
+        if (originalFull) {
+            Lampa.Component.add('full', function (object) {
+                // Вызываем оригинальный конструктор карточки, чтобы не сломать логику Lampa
+                originalFull.apply(this, arguments);
 
-        network.silent(tmdbUrl, function (response) {
-            if (!response || !response.seasons || !response.seasons.length) return;
+                // Сохраняем ссылку на оригинальный метод создания DOM-структуры
+                var originalCreate = this.create;
 
-            // Очищаем стандартный текстовый список селектора сезонов
-            seasonsContainer.empty();
+                this.create = function () {
+                    // Запускаем штатное построение интерфейса карточки
+                    originalCreate.apply(this, arguments);
 
-            // Создаем обертку для сетки постеров
-            var gridHtml = $('<div class="seasons-posters-grid"></div>');
-            
-            // Задаем стили отображения сетки (flex-ряд с горизонтальной прокруткой для пультов)
-            gridHtml.css({
-                'display': 'flex',
-                'flex-direction': 'row',
-                'overflow-x': 'auto',
-                'gap': '15px',
-                'padding': '15px 5px',
-                'width': '100%',
-                'scroll-behavior': 'smooth'
-            });
+                    // Проверяем, что это сериал и у него есть сезоны
+                    if (object.movie && object.movie.number_of_seasons) {
+                        var render = this.render();
+                        if (!render) return;
 
-            response.seasons.forEach(function (season) {
-                if (season.season_number === 0 && !season.poster_path) return; 
+                        // Ищем контейнер сезонов по всем возможным селекторам Lampa
+                        var seasonsContainer = render.find('.full-start__seasons, .full-descr__seasons, [data-id="seasons"]');
+                        if (!seasonsContainer.length) return;
 
-                // Получаем ссылку на постер через внутренний метод Lampa для картинок
-                var poster = season.poster_path 
-                    ? Lampa.TMDB.image('t/p/w300' + season.poster_path) 
-                    : 'img/plugins/no-poster.png';
+                        var tv_id = object.movie.id;
+                        var network = new Lampa.Reguest();
+                        // Запрос через встроенный прокси Лампы для обхода блокировок TMDB
+                        var tmdbUrl = 'tv/' + tv_id + '?language=ru-RU';
 
-                var item = $(`
-                    <div class="season-poster-item selector" data-season="${season.season_number}" style="width: 150px; flex-shrink: 0; cursor: pointer; transition: transform 0.2s ease;">
-                        <div class="season-poster-img" style="background-image: url(${poster}); width: 100%; height: 220px; background-size: cover; background-position: center; border-radius: 8px; box-shadow: 0 4px 8px rgba(0,0,0,0.4);"></div>
-                        <div class="season-poster-title" style="margin-top: 8px; font-size: 14px; font-weight: bold; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: center;">${season.name}</div>
-                        <div class="season-poster-count" style="font-size: 12px; color: #a0a0a0; text-align: center;">${season.episode_count} эп.</div>
-                    </div>
-                `);
+                        network.silent(tmdbUrl, function (response) {
+                            if (!response || !response.seasons || !response.seasons.length) return;
 
-                // Добавляем обработчик клика/выбора сезона (для интеграции с плеером)
-                item.on('hover:enter', function () {
-                    // Эмулируем клик по оригинальной вкладке сезонов Lampa для открытия списка серий
-                    if (data.object.selectSeason) {
-                        data.object.selectSeason(season.season_number);
-                    } else {
-                        Lampa.Noty.show('Сезон ' + season.season_number + ' выбран');
+                            // Полностью очищаем старый текстовый список/кнопки
+                            seasonsContainer.empty();
+
+                            // Формируем контейнер-сетку с горизонтальным скроллом для пультов TV
+                            var gridHtml = $('<div class="seasons-posters-grid"></div>');
+                            gridHtml.css({
+                                'display': 'flex',
+                                'flex-direction': 'row',
+                                'overflow-x': 'auto',
+                                'gap': '15px',
+                                'padding': '15px 5px',
+                                'width': '100%',
+                                'scroll-behavior': 'smooth',
+                                'box-sizing': 'border-box'
+                            });
+
+                            response.seasons.forEach(function (season) {
+                                // Игнорируем спецвыпуски (0 сезон), если у них нет картинки
+                                if (season.season_number === 0 && !season.poster_path) return;
+
+                                // Извлекаем ссылку на изображение через парсер TMDB в Lampa
+                                var poster = season.poster_path 
+                                    ? Lampa.TMDB.image('t/p/w300' + season.poster_path) 
+                                    : 'img/plugins/no-poster.png';
+
+                                // Шаблон карточки. Класс 'selector' обязателен для навигации кнопками пульта!
+                                var item = $(`
+                                    <div class="season-poster-item selector" data-season="${season.season_number}" style="width: 140px; flex-shrink: 0; cursor: pointer; text-align: center;">
+                                        <div class="season-poster-img" style="background-image: url(${poster}); width: 100%; height: 210px; background-size: cover; background-position: center; border-radius: 8px; box-shadow: 0 4px 10px rgba(0,0,0,0.5); transition: transform 0.2s ease;"></div>
+                                        <div class="season-poster-title" style="margin-top: 8px; font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #fff;">${season.name}</div>
+                                        <div class="season-poster-count" style="font-size: 11px; color: #ababab; margin-top: 2px;">${season.episode_count} сер.</div>
+                                    </div>
+                                `);
+
+                                // Обработка навигации и выбора (нажатия OK на пульте)
+                                item.on('hover:enter', function () {
+                                    if (object.selectSeason) {
+                                        // Если метод активен в объекте, запускаем выбор сезона
+                                        object.selectSeason(season.season_number);
+                                    } else {
+                                        // Альтернативный клик по скрытым триггерам Лампы
+                                        var nativeTab = render.find('.full-start__season[data-number="' + season.season_number + '"]');
+                                        if (nativeTab.length) nativeTab.trigger('click');
+                                    }
+                                });
+
+                                gridHtml.append(item);
+                            });
+
+                            seasonsContainer.append(gridHtml);
+
+                            // Перезапускаем навигационный модуль Lampa, чтобы пульт увидел новые элементы
+                            if (window.Lampa.Navigator) {
+                                Lampa.Navigator.update();
+                            }
+
+                        }, function () {
+                            console.log('Seasons Posters Plugin: Ошибка сети/TMDB API');
+                        });
                     }
-                });
-
-                gridHtml.append(item);
+                };
             });
-
-            seasonsContainer.append(gridHtml);
-            
-            // Принудительно обновляем навигацию пульта, чтобы новые элементы стали кликабельными
-            if (window.Lampa.Navigator) {
-                Lampa.Navigator.update();
-            }
-
-        }, function () {
-            Lampa.Noty.show('Ошибка загрузки данных сезонов из TMDB');
-        });
+        }
     }
 
-    // Регистрация плагина в системе Lampa
+    // Регистрация при готовности ядра приложения
     if (window.Lampa) {
         initSeasonsPosters();
     } else {
