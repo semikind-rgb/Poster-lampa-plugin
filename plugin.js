@@ -2,58 +2,60 @@
     'use strict';
 
     function initSeasonsPosters() {
-        // Подключаемся к моменту создания интерфейса карточки фильма
-        Lampa.Listener.follow('full', function (e) {
-            if (e.type === 'start' && e.data && e.data.movie) {
-                // Заменяем метод отображения селектора сезонов для текущей активной карточки
-                setTimeout(function() {
-                    interceptLampaSeasons(e.data);
-                }, 200);
-            }
-        });
-    }
+        // Перехватываем системный метод Lampa.Component.add для глубокой интеграции
+        var originalComponentAdd = Lampa.Component.add;
 
-    function interceptLampaSeasons(cardData) {
-        var activeActivity = Lampa.Activity.active();
-        if (!activeActivity || !activeActivity.movie || !activeActivity.movie.seasons) return;
+        Lampa.Component.add = function (name, component) {
+            // Проверяем, что регистрируется компонент полной карточки релиза
+            if (name === 'full') {
+                var originalFullComponent = component;
 
-        // Находим оригинальную функцию, которая открывает список серий/сезонов
-        if (activeActivity.object && activeActivity.object.selectSeason) {
-            // Если плагин еще не перехватил метод
-            if (!activeActivity.object.selectSeason.isIntercepted) {
-                var originalSelectSeason = activeActivity.object.selectSeason;
+                // Переписываем конструктор карточки
+                component = function (object) {
+                    originalFullComponent.apply(this, arguments);
 
-                // Создаем свой собственный обработчик
-                activeActivity.object.selectSeason = function(season_number) {
-                    // Вызываем оригинальное действие, чтобы сессии и плеер знали выбранный сезон
-                    originalSelectSeason.apply(this, arguments);
-                    
-                    // Форсируем перерисовку блока сезонов в виде постеров
-                    injectPostersDirectly();
+                    var originalCreate = this.create;
+
+                    // Перехватываем штатный метод создания интерфейса карточки
+                    this.create = function () {
+                        originalCreate.apply(this, arguments);
+
+                        // Проверяем, что открыт сериал и у него есть сезоны в базе данных
+                        if (object.movie && object.movie.number_of_seasons && object.movie.seasons) {
+                            var render = this.render();
+                            if (!render) return;
+
+                            // Запускаем инжекцию постеров с минимальной задержкой для готовности DOM
+                            setTimeout(function () {
+                                try {
+                                    injectPostersGrid(render, object);
+                                } catch (err) {
+                                    console.log('Seasons Posters Error: ', err);
+                                }
+                            }, 150);
+                        }
+                    };
                 };
-                activeActivity.object.selectSeason.isIntercepted = true;
             }
-        }
-
-        // Запускаем первичную инжекцию постеров
-        injectPostersDirectly();
+            // Возвращаем измененный или оригинальный компонент в систему Lampa
+            return originalComponentAdd.call(Lampa.Component, name, component);
+        };
     }
 
-    function injectPostersDirectly() {
-        var activeActivity = Lampa.Activity.active();
-        if (!activeActivity || !activeActivity.render) return;
-
-        var render = activeActivity.render;
-        // Расширенный поиск контейнера по абсолютно всем существующим классам модов Lampa
-        var seasonsContainer = render.find('.full-start__seasons, .full-descr__seasons, [data-id="seasons"], .full-start__season, .full-descr__link').first().parent();
-        
+    function injectPostersGrid(render, object) {
+        // Ищем контейнер сезонов по абсолютно всем существующим классам модов Lampa
+        var seasonsContainer = render.find('.full-start__seasons, .full-descr__seasons, [data-id="seasons"], .full-start__season, .full-descr__link').first();
         if (!seasonsContainer.length) return;
 
-        var seasonsData = activeActivity.movie.seasons;
+        // Находим родительский блок, в который будем строить сетку
+        var parentContainer = seasonsContainer.parent();
+        if (!parentContainer.length) return;
+
+        var seasonsData = object.movie.seasons;
         if (!seasonsData || !seasonsData.length) return;
 
-        // Полностью очищаем контейнер, заставляя Лампу забыть про старую верстку
-        seasonsContainer.empty();
+        // Полностью очищаем стандартные текстовые кнопки
+        parentContainer.empty();
 
         // Строим горизонтальную ленту-сетку
         var gridHtml = $('<div class="seasons-posters-grid"></div>');
@@ -69,9 +71,10 @@
         });
 
         seasonsData.forEach(function (season) {
+            // Игнорируем спецвыпуски, если у них нет картинки
             if (season.season_number === 0 && !season.poster_path) return;
 
-            // Конвертируем картинку TMDB через нативный метод ядра
+            // Конвертируем картинку TMDB через нативный метод ядра Lampa
             var poster = season.poster_path 
                 ? Lampa.TMDB.image('t/p/w300' + season.poster_path) 
                 : 'img/plugins/no-poster.png';
@@ -103,18 +106,17 @@
                 });
             });
 
-            // Обработка клика (кнопка ОК на пульте)
+            // Обработка клика (нажатие кнопки ОК на пульте)
             item.on('hover:enter', function () {
-                if (activeActivity.object && activeActivity.object.selectSeason) {
-                    // Активируем выбор сезона напрямую в обход UI
-                    activeActivity.object.selectSeason(season.season_number);
+                if (object.selectSeason) {
+                    object.selectSeason(season.season_number);
                 }
             });
 
             gridHtml.append(item);
         });
 
-        seasonsContainer.append(gridHtml);
+        parentContainer.append(gridHtml);
 
         // Перезапускаем навигационный модуль Navigator, чтобы пульт увидел новые кнопки-постеры
         if (window.Lampa.Navigator) {
@@ -122,7 +124,7 @@
         }
     }
 
-    // Регистрация в экосистеме Лампы
+    // Регистрация в экосистеме Лампы при старте приложения
     if (window.Lampa) {
         initSeasonsPosters();
     } else {
